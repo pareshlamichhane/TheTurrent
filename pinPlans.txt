@@ -1,16 +1,15 @@
-| Component       | ESP32 Pin |
-| --------------- | --------: |
-| Flame Sensor DO |   GPIO 27 |
-| Flame Sensor AO |   GPIO 32 |
-| MQ-2 Smoke AO   |   GPIO 34 |
-| Soil Sensor AO  |   GPIO 35 |
-| DHT22 Data      |    GPIO 4 |
-| PIR             |   GPIO 26 |
-| Servo           |   GPIO 13 |
-| Ultrasonic TRIG |    GPIO 5 |
-| Ultrasonic ECHO |   GPIO 18 |
-| Pump Relay      |   GPIO 25 |
-| Buzzer          |   GPIO 14 |
-| Green LED       |   GPIO 16 |
-| Yellow LED      |   GPIO 17 |
-| Red LED         |   GPIO 19 |
+| Component                    |     Signal | ESP32 GPIO |
+| ---------------------------- | ---------: | ---------: |
+| Servo motor                  |     Signal |    GPIO 13 |
+| Ultrasonic sensor            |       TRIG |     GPIO 5 |
+| Ultrasonic sensor            |       ECHO |    GPIO 18 |
+| Flame sensor                 | Digital DO |    GPIO 27 |
+| Flame sensor                 |  Analog AO |    GPIO 32 |
+| MQ-2 smoke sensor            |  Analog AO |    GPIO 34 |
+| DHT22 sensor                 |       Data |     GPIO 4 |
+| Soil moisture sensor         |  Analog AO |    GPIO 35 |
+| Pump relay                   |    Control |    GPIO 25 |
+| Buzzer                       |    Control |    GPIO 14 |
+| Green LED                    |     Signal |    GPIO 16 |
+| Yellow LED                   |     Signal |    GPIO 17 |
+| Red LED                      |     Signal |    GPIO 19 |
