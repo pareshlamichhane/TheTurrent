@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Autonomous Environmental Safety Turret</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brandBlock">
+        <div class="brandIcon">AEST</div>
+        <div>
+          <h1>Autonomous Environmental Safety Turret</h1>
+          <p>Real-time environmental monitoring, radar visualization, autonomous response, and operator control</p>
+        </div>
+      </div>
+
+      <div class="topStatusGroup">
+        <div id="connectionStatus" class="pill disconnected">OFFLINE</div>
+        <div id="systemStatus" class="pill safe">SAFE</div>
+      </div>
+    </header>
+
+    <section id="alertStrip" class="alertStrip safeFlash">
+      <div class="alertMain">
+        <div id="alertTitle" class="alertTitle">SYSTEM STANDBY</div>
+        <div id="alertMessage" class="alertMessage">Waiting for live telemetry from the turret controller.</div>
+      </div>
+
+      <div class="alertMeta">
+        <div class="metaLabel">AUTO STATE</div>
+        <div id="alertState" class="metaValue">WAITING</div>
+      </div>
+    </section>
+
+    <main class="dashboardGrid">
+      <section class="panel radarPanel">
+        <div class="panelHeader">
+          <div>
+            <h2>Radar & Targeting</h2>
+            <p>Ultrasonic sweep, object distance, fire targeting, and action direction</p>
+          </div>
+          <div class="panelBadge" id="angleText">0°</div>
+        </div>
+
+        <canvas id="radarCanvas" width="960" height="560"></canvas>
+
+        <div class="radarStats">
+          <div>
+            <span>Distance</span>
+            <strong id="distanceText">-- cm</strong>
+          </div>
+          <div>
+            <span>Servo Angle</span>
+            <strong id="servoText">--°</strong>
+          </div>
+          <div>
+            <span>Mode</span>
+            <strong id="modeText">--</strong>
+          </div>
+          <div>
+            <span>Action State</span>
+            <strong id="autoStateFooter">--</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel controlPanel">
+        <div class="panelHeader">
+          <div>
+            <h2>Operator Control</h2>
+            <p>Manual override and emergency response controls</p>
+          </div>
+        </div>
+
+        <div class="controlPad">
+          <button id="btnManual" class="btn neutral">Manual Mode</button>
+          <button id="btnAuto" class="btn success">Auto Mode</button>
+
+          <button id="btnEmergencyStop" class="btn danger wideButton">Emergency Stop</button>
+          <button id="btnClearEmergency" class="btn warning wideButton">Clear Emergency</button>
+
+          <button id="btnLeft" class="btn">◀ Servo Left</button>
+          <button id="btnRight" class="btn">Servo Right ▶</button>
+
+          <button id="btnPumpOn" class="btn danger">Pump Burst</button>
+          <button id="btnPumpOff" class="btn">Pump Off</button>
+
+          <button id="btnBuzzer" class="btn warning">Toggle Buzzer</button>
+          <button id="btnLedGreen" class="btn success">Green LED</button>
+
+          <button id="btnLedYellow" class="btn warning">Yellow LED</button>
+          <button id="btnLedRed" class="btn danger">Red LED</button>
+        </div>
+
+        <div class="keyboardBox">
+          <h3>Keyboard Controls</h3>
+          <div class="keyGrid">
+            <div><kbd>A</kbd><span>Servo Left</span></div>
+            <div><kbd>D</kbd><span>Servo Right</span></div>
+            <div><kbd>W</kbd><span>Pump Burst</span></div>
+            <div><kbd>S</kbd><span>Pump Off</span></div>
+            <div><kbd>B</kbd><span>Buzzer</span></div>
+            <div><kbd>M</kbd><span>Manual</span></div>
+            <div><kbd>X</kbd><span>Auto</span></div>
+            <div><kbd>1/2/3</kbd><span>LEDs</span></div>
+          </div>
+        </div>
+
+        <div class="networkBox">
+          <h3>Network Target</h3>
+          <label>ESP32 Controller IP</label>
+          <div class="ipRow">
+            <input id="esp32IpInput" placeholder="192.168.1.50" />
+            <button id="btnSetIp" class="btn smallBtn">Set</button>
+          </div>
+          <small>The target IP is automatically detected when telemetry packets arrive.</small>
+        </div>
+      </section>
+
+      <section class="panel statusPanel">
+        <div class="panelHeader">
+          <div>
+            <h2>Mission State</h2>
+            <p>Autonomous decision and response status</p>
+          </div>
+        </div>
+
+        <div class="stateGrid">
+          <div class="stateCard">
+            <span>Auto State</span>
+            <strong id="autoStateValue">--</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>Emergency Stop</span>
+            <strong id="emergencyStopValue">--</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>Wi-Fi</span>
+            <strong id="wifiValue">--</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>Setup AP</span>
+            <strong id="setupApValue">--</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>OTA Ready</span>
+            <strong id="otaReadyValue">--</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>Fire Attempts</span>
+            <strong id="fireAttemptsValue">0</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>Soil Attempts</span>
+            <strong id="soilAttemptsValue">0</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>Soil Water Angle</span>
+            <strong id="soilWaterAngleValue">--°</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>Best Flame Angle</span>
+            <strong id="bestFlameAngleValue">--°</strong>
+          </div>
+
+          <div class="stateCard">
+            <span>Best Flame Score</span>
+            <strong id="bestFlameScoreValue">0</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel sensorsPanel">
+        <div class="panelHeader">
+          <div>
+            <h2>Sensor Telemetry</h2>
+            <p>Live readings from environmental sensors</p>
+          </div>
+        </div>
+
+        <div class="sensorGrid">
+          <div class="sensorCard temperature">
+            <span>Temperature</span>
+            <strong id="tempValue">-- °C</strong>
+          </div>
+
+          <div class="sensorCard humidity">
+            <span>Humidity</span>
+            <strong id="humidityValue">-- %</strong>
+          </div>
+
+          <div class="sensorCard smoke">
+            <span>Smoke</span>
+            <strong id="smokeValue">--</strong>
+          </div>
+
+          <div class="sensorCard soil">
+            <span>Soil Moisture</span>
+            <strong id="soilValue">--</strong>
+          </div>
+
+          <div class="sensorCard flame">
+            <span>Flame Digital</span>
+            <strong id="flameValue">--</strong>
+          </div>
+
+          <div class="sensorCard flame">
+            <span>Flame Analog</span>
+            <strong id="flameAnalogValue">--</strong>
+          </div>
+
+          <div class="sensorCard flame">
+            <span>Flame Score</span>
+            <strong id="flameScoreValue">--</strong>
+          </div>
+
+          <div class="sensorCard near">
+            <span>Near Warning</span>
+            <strong id="nearWarningValue">--</strong>
+          </div>
+
+          <div class="sensorCard near">
+            <span>Near Danger</span>
+            <strong id="nearDangerValue">--</strong>
+          </div>
+
+          <div class="sensorCard near">
+            <span>Deterrent Pump</span>
+            <strong id="nearPumpValue">--</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel actuatorsPanel">
+        <div class="panelHeader">
+          <div>
+            <h2>Actuator Status</h2>
+            <p>Pump, buzzer, and indicator output states</p>
+          </div>
+        </div>
+
+        <div class="actuatorGrid">
+          <div class="actuatorCard">
+            <span>Pump</span>
+            <strong id="pumpValue">--</strong>
+          </div>
+
+          <div class="actuatorCard">
+            <span>Buzzer</span>
+            <strong id="buzzerValue">--</strong>
+          </div>
+
+          <div class="actuatorCard">
+            <span>Green LED</span>
+            <strong id="greenLedValue">--</strong>
+          </div>
+
+          <div class="actuatorCard">
+            <span>Yellow LED</span>
+            <strong id="yellowLedValue">--</strong>
+          </div>
+
+          <div class="actuatorCard">
+            <span>Red LED</span>
+            <strong id="redLedValue">--</strong>
+          </div>
+
+          <div class="actuatorCard">
+            <span>Packets</span>
+            <strong id="packetValue">0</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel eventPanel">
+        <div class="panelHeader">
+          <div>
+            <h2>Event Timeline</h2>
+            <p>System decisions, warnings, and response actions</p>
+          </div>
+        </div>
+
+        <div id="eventLog" class="eventLog"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

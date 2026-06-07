@@ -1,0 +1,7 @@
+## install these
+
+ESP32Servo
+DHT sensor library
+Adafruit Unified Sensor
+ArduinoJson
+ArduinoOTA
