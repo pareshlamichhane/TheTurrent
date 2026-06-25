@@ -4,15 +4,13 @@
 #include <ESP32Servo.h>
 
 // --- Hardware Pin Definitions ---
-const int servoPin = 18;  
-const int trigPin = 8;     
-const int echoPin = 16;    
+const int servoPin = 13;  
+const int trigPin = 18;     
+const int echoPin = 5;      
 const int flamePin = 7;   
-const int buzzerPin = 6;  
-
-// Future Implementation Pins
-// const int relayPin = 17;  // Reserved for relay
-// const int smokePin = 4;   // Reserved for MQ smoke sensor
+const int relayPin = 17;    // Relay Pin (Active-Low)
+const int buzzerPin = 12;   // Buzzer Pin (Active-High)
+#define RGB_LED_PIN 48 
 
 Servo radarServo;
 
@@ -30,23 +28,18 @@ const long interval = 40; // 40ms sweep delay
 int currentAngle = 0;
 bool sweepingForward = true;
 
-// --- Buzzer Timer Variables ---
-unsigned long previousBuzzerMillis = 0;
-int buzzerInterval = 0;   // 0 = Off, 100 = Fast beep, 500 = Slow beep
-bool buzzerState = HIGH;  // DEFAULT TO HIGH (Active-Low logic = OFF)
-
 // --- Tracking and Locking Variables ---
-enum RadarState { SWEEPING, MEASURING_OBJECT, MEASURING_FLAME, LOCKED_OBJECT, LOCKED_FLAME };
+enum RadarState { SWEEPING, MEASURING_FLAME, LOCKED_FLAME };
 RadarState radarState = SWEEPING;
-
-// Object tracking variables
-int objectStartAngle = 0;
-int lockedAngle = 0;
 
 // Flame tracking variables
 const int FLAME_THRESHOLD = 800; 
 int maxFlameIntensity = 0;
 int maxFlameAngle = 0;
+
+// --- Timeout Variables ---
+unsigned long lockStartTime = 0;
+const unsigned long MAX_LOCK_TIME = 5000; // 5 seconds max lock duration
 
 // --- Embedded HTML/JS Frontend ---
 const char index_html[] PROGMEM = R"rawliteral(
@@ -55,7 +48,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP32-S3 Security Radar</title>
+    <title>ESP32-S3 Flame & Ultrasonic Radar</title>
     <style>
         body {
             background-color: #050505;
@@ -93,9 +86,9 @@ const char index_html[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <div id="radar-container">
-        <h2>180° SECURITY SCANNER</h2>
+        <h2>180° FLAME & DISTANCE SCANNER</h2>
         <canvas id="radarCanvas" width="800" height="400"></canvas>
-        <div id="stats">Angle: 0° | Distance: Calculating... | System: Booting...</div>
+        <div id="stats">Angle: 0° | Distance: 0cm | Status: Scanning...</div>
     </div>
 
     <script>
@@ -109,30 +102,20 @@ const char index_html[] PROGMEM = R"rawliteral(
         const radarRadius = canvas.height - 30; 
         
         const maxDistance = 150; 
-        const smoothingFactor = 0.3; 
-
         let currentAngle = 0;
-        let rawDistance = maxDistance;
-        let filteredDistance = maxDistance; 
         let flameActive = false;
         let blips = []; 
 
         socket.onmessage = function(event) {
             const data = JSON.parse(event.data);
             currentAngle = data.angle;
-            rawDistance = data.distance;
+            const distance = data.distance;
             const flameIntensity = data.flame;
             
             flameActive = flameIntensity > 800; 
 
-            if (rawDistance >= maxDistance || rawDistance <= 2) {
-                rawDistance = maxDistance;
-            }
-
-            filteredDistance = (rawDistance * smoothingFactor) + (filteredDistance * (1 - smoothingFactor));
-
             let flameText = flameActive ? `<span class="danger">FLAME DETECTED (${flameIntensity})</span>` : 'CLEAR';
-            stats.innerHTML = `Angle: <strong>${currentAngle}°</strong> | Distance: <strong>${rawDistance === maxDistance ? 'MAX' : Math.round(filteredDistance) + ' cm'}</strong> | STATUS: ${flameText}`;
+            stats.innerHTML = `Angle: <strong>${currentAngle}°</strong> | Distance: <strong>${distance}cm</strong> | STATUS: ${flameText}`;
 
             if (flameActive) {
                 document.body.classList.add('flame-alert');
@@ -140,14 +123,14 @@ const char index_html[] PROGMEM = R"rawliteral(
                 document.body.classList.remove('flame-alert');
             }
 
-            if (filteredDistance < maxDistance || flameActive) {
-                blips.push({
-                    angle: currentAngle,
-                    distance: flameActive ? maxDistance / 2 : filteredDistance, 
-                    isFlame: flameActive,
-                    opacity: 1.0
-                });
-            }
+            let finalDistance = distance > maxDistance ? maxDistance : distance;
+
+            blips.push({
+                angle: currentAngle,
+                distance: finalDistance, 
+                isFlame: flameActive,
+                opacity: 1.0
+            });
         };
 
         function drawRadar() {
@@ -166,8 +149,6 @@ const char index_html[] PROGMEM = R"rawliteral(
             ctx.beginPath();
             ctx.moveTo(centerX - radarRadius, centerY);
             ctx.lineTo(centerX + radarRadius, centerY);
-            ctx.moveTo(centerX, centerY);
-            ctx.lineTo(centerX, centerY - radarRadius);
             ctx.stroke();
 
             for (let i = blips.length - 1; i >= 0; i--) {
@@ -178,9 +159,9 @@ const char index_html[] PROGMEM = R"rawliteral(
                 let blipX = centerX + visualRadius * Math.cos(angleRad);
                 let blipY = centerY - visualRadius * Math.sin(angleRad);
 
-                ctx.fillStyle = blip.isFlame ? `rgba(255, 165, 0, ${blip.opacity})` : `rgba(255, 0, 0, ${blip.opacity})`;
+                ctx.fillStyle = blip.isFlame ? `rgba(255, 165, 0, ${blip.opacity})` : `rgba(0, 200, 50, ${blip.opacity * 0.3})`;
                 ctx.beginPath();
-                ctx.arc(blipX, blipY, blip.isFlame ? 12 : 6, 0, 2 * Math.PI);
+                ctx.arc(blipX, blipY, blip.isFlame ? 12 : 5, 0, 2 * Math.PI);
                 ctx.fill();
 
                 blip.opacity -= 0.01;
@@ -190,10 +171,8 @@ const char index_html[] PROGMEM = R"rawliteral(
             }
 
             let sweepRad = currentAngle * Math.PI / 180;
-            let currentVisualRadius = (filteredDistance / maxDistance) * radarRadius;
-            
-            let endX = centerX + currentVisualRadius * Math.cos(sweepRad);
-            let endY = centerY - currentVisualRadius * Math.sin(sweepRad);
+            let endX = centerX + radarRadius * Math.cos(sweepRad);
+            let endY = centerY - radarRadius * Math.sin(sweepRad);
 
             ctx.strokeStyle = flameActive ? 'rgba(255, 0, 0, 0.8)' : 'rgba(0, 255, 50, 0.8)';
             ctx.lineWidth = 3;
@@ -211,21 +190,34 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
+int getDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  
+  long duration = pulseIn(echoPin, HIGH, 30000); 
+  if (duration == 0) return 150;                
+  return duration * 0.034 / 2;
+}
+
 void setup() {
   Serial.begin(115200);
 
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
+  pinMode(trigPin, OUTPUT);  
+  pinMode(echoPin, INPUT);    
   pinMode(flamePin, INPUT);
+  
+  pinMode(relayPin, OUTPUT);
+  digitalWrite(relayPin, HIGH); // Relay OFF for active-low
+  
   pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW);  
   
-  // FIX: Active-low buzzer requires HIGH to stay silent on boot
-  digitalWrite(buzzerPin, HIGH); 
+  pinMode(RGB_LED_PIN, OUTPUT);
+  neopixelWrite(RGB_LED_PIN, 0, 0, 0); 
   
-  // Future setups
-  // pinMode(relayPin, OUTPUT);
-  // pinMode(smokePin, INPUT);
-
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
   ESP32PWM::allocateTimer(2);
@@ -249,7 +241,6 @@ void setup() {
   webSocket.begin();
 }
 
-// Helper function to advance the servo angle
 void advanceSweep() {
   if (sweepingForward) {
     currentAngle++;
@@ -265,77 +256,45 @@ void loop() {
   webSocket.loop();
 
   unsigned long currentMillis = millis();
-
-  // --- NON-BLOCKING BUZZER LOGIC ---
-  if (buzzerInterval > 0) {
-    if (currentMillis - previousBuzzerMillis >= buzzerInterval) {
-      previousBuzzerMillis = currentMillis;
-      buzzerState = !buzzerState; // Toggle state
-      digitalWrite(buzzerPin, buzzerState);
-    }
-  } else {
-    // FIX: Force OFF (HIGH) if interval is 0
-    digitalWrite(buzzerPin, HIGH); 
-    buzzerState = HIGH;
-  }
   
-  // --- RADAR SWEEP & SENSOR LOGIC ---
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
 
     radarServo.write(currentAngle);
     
-    int distance = getDistance();
-    if (distance > 150 || distance == 0) distance = 150; 
+    int distance = getDistance(); 
 
     int rawFlame = analogRead(flamePin);
     int flameIntensity = 4095 - rawFlame; 
     
-    // --- SERIAL MONITOR OUTPUT ---
     Serial.print("Angle: "); Serial.print(currentAngle);
-    Serial.print(" | Dist: "); Serial.print(distance); Serial.print("cm");
+    Serial.print(" | Distance: "); Serial.print(distance);
     Serial.print(" | Flame: "); Serial.print(flameIntensity);
-    // Because the buzzer is active-LOW, LOW = ON and HIGH = OFF
-    Serial.print(" | Buzzer: "); Serial.println(buzzerState == LOW ? "ON" : "OFF");
+    Serial.print(" | State: "); Serial.println(radarState);
 
     String jsonString = "{\"angle\":" + String(currentAngle) + ", \"distance\":" + String(distance) + ", \"flame\":" + String(flameIntensity) + "}";
     webSocket.broadcastTXT(jsonString);
 
-    // --- State Machine Logic ---
     switch (radarState) {
       
       case SWEEPING:
-        buzzerInterval = 0; // Silent while sweeping
+        neopixelWrite(RGB_LED_PIN, 0, 64, 0); // 🟢 GREEN Light
+        digitalWrite(relayPin, HIGH);         // Relay OFF 
+        digitalWrite(buzzerPin, LOW);         // Buzzer OFF
+        
         if (flameIntensity > FLAME_THRESHOLD) {
           radarState = MEASURING_FLAME;
           maxFlameIntensity = flameIntensity;
           maxFlameAngle = currentAngle;
         } 
-        else if (distance < 15) {
-          radarState = MEASURING_OBJECT;
-          objectStartAngle = currentAngle;
-        }
         advanceSweep();
         break;
 
-      case MEASURING_OBJECT:
-        buzzerInterval = 0; 
-        if (flameIntensity > FLAME_THRESHOLD) {
-          radarState = MEASURING_FLAME;
-          maxFlameIntensity = flameIntensity;
-          maxFlameAngle = currentAngle;
-        } 
-        else if (distance >= 15 || currentAngle == 0 || currentAngle == 180) {
-          lockedAngle = (objectStartAngle + currentAngle) / 2;
-          currentAngle = lockedAngle; 
-          radarState = LOCKED_OBJECT;
-        } else {
-          advanceSweep();
-        }
-        break;
-
       case MEASURING_FLAME:
-        buzzerInterval = 100; // FAST BEEP for Flame Warning
+        neopixelWrite(RGB_LED_PIN, 0, 0, 64); // 🔵 BLUE Light
+        digitalWrite(relayPin, HIGH);         
+        digitalWrite(buzzerPin, LOW);         
+        
         if (flameIntensity > maxFlameIntensity) {
           maxFlameIntensity = flameIntensity;
           maxFlameAngle = currentAngle;
@@ -343,40 +302,24 @@ void loop() {
         if (flameIntensity <= FLAME_THRESHOLD || currentAngle == 0 || currentAngle == 180) {
           currentAngle = maxFlameAngle; 
           radarState = LOCKED_FLAME;
+          lockStartTime = millis();           // Capture time when lock begins
         } else {
           advanceSweep();
         }
         break;
 
-      case LOCKED_OBJECT:
-        buzzerInterval = 500; // SLOW BEEP for Intruder Alert
-        if (flameIntensity > FLAME_THRESHOLD) {
-          radarState = MEASURING_FLAME;
-          maxFlameIntensity = flameIntensity;
-          maxFlameAngle = currentAngle;
-        } 
-        else if (distance > 20) {
-          radarState = SWEEPING;
-        }
-        break;
-
       case LOCKED_FLAME:
-        buzzerInterval = 100; // FAST BEEP for Flame Lock
-        if (flameIntensity <= FLAME_THRESHOLD) {
+        neopixelWrite(RGB_LED_PIN, 64, 0, 0); // 🔴 RED Light
+        digitalWrite(relayPin, LOW);          // Relay ON (Active-Low)
+        digitalWrite(buzzerPin, HIGH);         // Buzzer ON
+        
+        // Break lock if flame goes away OR if 5 seconds have passed
+        if (flameIntensity <= FLAME_THRESHOLD || (millis() - lockStartTime >= MAX_LOCK_TIME)) {
+          // Reset tracking data before searching again
+          maxFlameIntensity = 0; 
           radarState = SWEEPING;
         }
         break;
     }
   }
-}
-
-int getDistance() {
-  digitalWrite(trigPin, LOW);
-  delayMicroseconds(2);
-  digitalWrite(trigPin, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(trigPin, LOW);
-  
-  long duration = pulseIn(echoPin, HIGH, 30000); 
-  return duration * 0.034 / 2;
 }
