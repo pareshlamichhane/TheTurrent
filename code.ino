@@ -8,9 +8,18 @@ const int servoPin = 13;
 const int trigPin = 18;     
 const int echoPin = 5;      
 const int flamePin = 7;   
-const int relayPin = 17;    // Relay Pin (Active-Low)
-const int buzzerPin = 12;   // Buzzer Pin (Active-High)
+const int relayPin = 17;    
+const int buzzerPin = 12;   
 #define RGB_LED_PIN 48 
+
+// --- CALIBRATION SETTINGS ---
+int NOZZLE_OFFSET = 10; 
+int SPRAY_WIDTH = 15; // Sprays 15 degrees left and right of the fire's center
+
+// --- DIGITAL LOGIC DEFINITIONS ---
+#define BUZZER_ON LOW    
+#define BUZZER_OFF HIGH  
+#define FLAME_DETECTED LOW   // Change to HIGH if your digital sensor works the other way
 
 Servo radarServo;
 
@@ -24,22 +33,34 @@ WebSocketsServer webSocket(81);
 
 // --- Radar Sweep Variables ---
 unsigned long previousMillis = 0;
-const long interval = 40; // 40ms sweep delay
+const long interval = 40; 
 int currentAngle = 0;
 bool sweepingForward = true;
 
 // --- Tracking and Locking Variables ---
-enum RadarState { SWEEPING, MEASURING_FLAME, LOCKED_FLAME };
+enum RadarState { SWEEPING, FINDING_EDGE, SECTOR_SPRAY };
 RadarState radarState = SWEEPING;
 
-// Flame tracking variables
-const int FLAME_THRESHOLD = 800; 
-int maxFlameIntensity = 0;
-int maxFlameAngle = 0;
+// --- Operating Modes ---
+enum SystemMode { AUTO_WITH_BUZZER, AUTO_WITHOUT_BUZZER, MANUAL };
+SystemMode currentMode = AUTO_WITHOUT_BUZZER; 
 
-// --- Timeout Variables ---
+int fireStartAngle = 0;
+int sprayCenter = 0;
+bool sprayForward = true;
+
 unsigned long lockStartTime = 0;
-const unsigned long MAX_LOCK_TIME = 5000; // 5 seconds max lock duration
+const unsigned long MAX_LOCK_TIME = 6000; // Sprays for 6 seconds
+
+// --- Melodious Buzzer Rhythm Variables ---
+bool triggerBuzzer = false;
+bool lastTriggerBuzzer = false;
+unsigned long lastBuzzerMillis = 0;
+int buzzerStep = 0;
+unsigned long buzzerKeepAlive = 0; 
+
+const int rhythmPattern[] = {100, 100, 100, 100, 300, 400}; 
+const int rhythmSteps = sizeof(rhythmPattern) / sizeof(rhythmPattern[0]);
 
 // --- Embedded HTML/JS Frontend ---
 const char index_html[] PROGMEM = R"rawliteral(
@@ -48,37 +69,23 @@ const char index_html[] PROGMEM = R"rawliteral(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP32-S3 Flame & Ultrasonic Radar</title>
+    <title>ESP32-S3 Digital Fire Radar</title>
     <style>
         body {
-            background-color: #050505;
-            color: #00ff33;
-            font-family: 'Courier New', Courier, monospace;
-            margin: 0;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
+            background-color: #050505; color: #00ff33;
+            font-family: 'Courier New', Courier, monospace; margin: 0;
+            overflow: hidden; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; height: 100vh;
             transition: background-color 0.3s;
         }
-        .flame-alert {
-            background-color: #330000 !important;
-            color: #ff3333 !important;
-        }
+        .flame-alert { background-color: #330000 !important; color: #ff3333 !important; }
         #radar-container { position: relative; text-align: center; }
         canvas {
-            background-color: #000;
-            border: 2px solid #005511;
-            border-radius: 400px 400px 0 0; 
-            box-shadow: 0 0 30px rgba(0, 255, 50, 0.15);
+            background-color: #000; border: 2px solid #005511;
+            border-radius: 400px 400px 0 0; box-shadow: 0 0 30px rgba(0, 255, 50, 0.15);
             transition: box-shadow 0.3s, border-color 0.3s;
         }
-        .flame-alert canvas {
-            border-color: #ff0000;
-            box-shadow: 0 0 40px rgba(255, 0, 0, 0.5);
-        }
+        .flame-alert canvas { border-color: #ff0000; box-shadow: 0 0 40px rgba(255, 0, 0, 0.5); }
         #stats { margin-top: 15px; font-size: 18px; letter-spacing: 1px; }
         .danger { color: #ff3333; font-weight: bold; animation: blink 1s infinite; }
         @keyframes blink { 50% { opacity: 0.5; } }
@@ -86,11 +93,10 @@ const char index_html[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <div id="radar-container">
-        <h2>180° FLAME & DISTANCE SCANNER</h2>
+        <h2>180° SECTOR SPRAY RADAR</h2>
         <canvas id="radarCanvas" width="800" height="400"></canvas>
         <div id="stats">Angle: 0° | Distance: 0cm | Status: Scanning...</div>
     </div>
-
     <script>
         const socket = new WebSocket('ws://' + window.location.hostname + ':81/');
         const canvas = document.getElementById('radarCanvas');
@@ -102,41 +108,28 @@ const char index_html[] PROGMEM = R"rawliteral(
         const radarRadius = canvas.height - 30; 
         
         const maxDistance = 150; 
-        let currentAngle = 0;
-        let flameActive = false;
-        let blips = []; 
+        let currentAngle = 0; let flameActive = false; let blips = []; 
 
         socket.onmessage = function(event) {
             const data = JSON.parse(event.data);
             currentAngle = data.angle;
             const distance = data.distance;
-            const flameIntensity = data.flame;
             
-            flameActive = flameIntensity > 800; 
+            flameActive = data.flame === 1; 
 
-            let flameText = flameActive ? `<span class="danger">FLAME DETECTED (${flameIntensity})</span>` : 'CLEAR';
+            let flameText = flameActive ? `<span class="danger">FIRE DETECTED!</span>` : 'CLEAR';
             stats.innerHTML = `Angle: <strong>${currentAngle}°</strong> | Distance: <strong>${distance}cm</strong> | STATUS: ${flameText}`;
 
-            if (flameActive) {
-                document.body.classList.add('flame-alert');
-            } else {
-                document.body.classList.remove('flame-alert');
-            }
+            if (flameActive) document.body.classList.add('flame-alert');
+            else document.body.classList.remove('flame-alert');
 
             let finalDistance = distance > maxDistance ? maxDistance : distance;
-
-            blips.push({
-                angle: currentAngle,
-                distance: finalDistance, 
-                isFlame: flameActive,
-                opacity: 1.0
-            });
+            blips.push({ angle: currentAngle, distance: finalDistance, isFlame: flameActive, opacity: 1.0 });
         };
 
         function drawRadar() {
             ctx.fillStyle = flameActive ? 'rgba(50, 0, 0, 0.1)' : 'rgba(0, 0, 0, 0.08)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-
             ctx.strokeStyle = flameActive ? 'rgba(255, 0, 0, 0.3)' : 'rgba(0, 100, 0, 0.3)';
             ctx.lineWidth = 1;
             
@@ -155,7 +148,6 @@ const char index_html[] PROGMEM = R"rawliteral(
                 let blip = blips[i];
                 let angleRad = blip.angle * Math.PI / 180;
                 let visualRadius = (blip.distance / maxDistance) * radarRadius;
-
                 let blipX = centerX + visualRadius * Math.cos(angleRad);
                 let blipY = centerY - visualRadius * Math.sin(angleRad);
 
@@ -165,9 +157,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                 ctx.fill();
 
                 blip.opacity -= 0.01;
-                if (blip.opacity <= 0) {
-                    blips.splice(i, 1);
-                }
+                if (blip.opacity <= 0) blips.splice(i, 1);
             }
 
             let sweepRad = currentAngle * Math.PI / 180;
@@ -183,7 +173,6 @@ const char index_html[] PROGMEM = R"rawliteral(
 
             requestAnimationFrame(drawRadar);
         }
-
         drawRadar();
     </script>
 </body>
@@ -196,7 +185,6 @@ int getDistance() {
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
-  
   long duration = pulseIn(echoPin, HIGH, 30000); 
   if (duration == 0) return 150;                
   return duration * 0.034 / 2;
@@ -204,16 +192,17 @@ int getDistance() {
 
 void setup() {
   Serial.begin(115200);
-
+  Serial.println("\nSystem Booting... (DIGITAL SECTOR SPRAY MODE)");
+  
   pinMode(trigPin, OUTPUT);  
   pinMode(echoPin, INPUT);    
-  pinMode(flamePin, INPUT);
+  pinMode(flamePin, INPUT_PULLUP); // Using pullup to keep digital signal stable
   
   pinMode(relayPin, OUTPUT);
-  digitalWrite(relayPin, HIGH); // Relay OFF for active-low
+  digitalWrite(relayPin, HIGH); 
   
   pinMode(buzzerPin, OUTPUT);
-  digitalWrite(buzzerPin, LOW);  
+  digitalWrite(buzzerPin, BUZZER_OFF);  
   
   pinMode(RGB_LED_PIN, OUTPUT);
   neopixelWrite(RGB_LED_PIN, 0, 0, 0); 
@@ -227,17 +216,9 @@ void setup() {
   radarServo.attach(servoPin, 700, 2200); 
   radarServo.write(0);
 
-  Serial.println("Setting up Access Point...");
   WiFi.softAP(ssid, password);
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(IP);
-
-  server.on("/", []() {
-    server.send(200, "text/html", index_html);
-  });
+  server.on("/", []() { server.send(200, "text/html", index_html); });
   server.begin();
-  
   webSocket.begin();
 }
 
@@ -251,75 +232,145 @@ void advanceSweep() {
   }
 }
 
+void handleBuzzerRhythm() {
+  if (!triggerBuzzer) {
+    digitalWrite(buzzerPin, BUZZER_OFF);
+    buzzerStep = 0;
+    lastTriggerBuzzer = false;
+    return;
+  }
+  
+  if (!lastTriggerBuzzer) {
+    digitalWrite(buzzerPin, BUZZER_ON);
+    lastBuzzerMillis = millis();
+    buzzerStep = 0;
+    lastTriggerBuzzer = true;
+  }
+  
+  unsigned long currentMillis = millis();
+  
+  if (currentMillis - lastBuzzerMillis >= rhythmPattern[buzzerStep]) {
+    lastBuzzerMillis = currentMillis;
+    buzzerStep++;
+    if (buzzerStep >= rhythmSteps) buzzerStep = 0; 
+    if (buzzerStep % 2 == 0) digitalWrite(buzzerPin, BUZZER_ON);
+    else digitalWrite(buzzerPin, BUZZER_OFF);
+  }
+}
+
+void handleSerialCommands() {
+  if (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim(); cmd.toLowerCase();
+    
+    if (cmd == "mode:auto") currentMode = AUTO_WITH_BUZZER;
+    else if (cmd == "mode:auto_silent" || cmd == "mode:auto:silent") currentMode = AUTO_WITHOUT_BUZZER;
+    else if (cmd == "mode:manual") {
+      currentMode = MANUAL;
+      digitalWrite(relayPin, HIGH); 
+      triggerBuzzer = false;
+      neopixelWrite(RGB_LED_PIN, 64, 0, 64); 
+    } 
+    else if (currentMode == MANUAL) {
+      if (cmd.startsWith("angle:")) {
+        int ang = cmd.substring(6).toInt();
+        if (ang >= 0 && ang <= 180) radarServo.write(ang);
+      } 
+      else if (cmd == "pump:on") digitalWrite(relayPin, LOW);
+      else if (cmd == "pump:off") digitalWrite(relayPin, HIGH);
+      else if (cmd == "buzzer:on") triggerBuzzer = true;
+      else if (cmd == "buzzer:off") triggerBuzzer = false;
+    }
+  }
+}
+
 void loop() {
   server.handleClient();
   webSocket.loop();
+  
+  handleSerialCommands();
+  handleBuzzerRhythm();
 
   unsigned long currentMillis = millis();
   
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
-
-    radarServo.write(currentAngle);
     
     int distance = getDistance(); 
-
-    int rawFlame = analogRead(flamePin);
-    int flameIntensity = 4095 - rawFlame; 
+    bool isFlame = (digitalRead(flamePin) == FLAME_DETECTED);
+    int jsonFlameStatus = isFlame ? 1 : 0; 
     
-    Serial.print("Angle: "); Serial.print(currentAngle);
-    Serial.print(" | Distance: "); Serial.print(distance);
-    Serial.print(" | Flame: "); Serial.print(flameIntensity);
-    Serial.print(" | State: "); Serial.println(radarState);
-
-    String jsonString = "{\"angle\":" + String(currentAngle) + ", \"distance\":" + String(distance) + ", \"flame\":" + String(flameIntensity) + "}";
+    String jsonString = "{\"angle\":" + String(currentAngle) + ", \"distance\":" + String(distance) + ", \"flame\":" + String(jsonFlameStatus) + "}";
     webSocket.broadcastTXT(jsonString);
 
-    switch (radarState) {
-      
-      case SWEEPING:
-        neopixelWrite(RGB_LED_PIN, 0, 64, 0); // 🟢 GREEN Light
-        digitalWrite(relayPin, HIGH);         // Relay OFF 
-        digitalWrite(buzzerPin, LOW);         // Buzzer OFF
-        
-        if (flameIntensity > FLAME_THRESHOLD) {
-          radarState = MEASURING_FLAME;
-          maxFlameIntensity = flameIntensity;
-          maxFlameAngle = currentAngle;
-        } 
-        advanceSweep();
-        break;
-
-      case MEASURING_FLAME:
-        neopixelWrite(RGB_LED_PIN, 0, 0, 64); // 🔵 BLUE Light
-        digitalWrite(relayPin, HIGH);         
-        digitalWrite(buzzerPin, LOW);         
-        
-        if (flameIntensity > maxFlameIntensity) {
-          maxFlameIntensity = flameIntensity;
-          maxFlameAngle = currentAngle;
-        }
-        if (flameIntensity <= FLAME_THRESHOLD || currentAngle == 0 || currentAngle == 180) {
-          currentAngle = maxFlameAngle; 
-          radarState = LOCKED_FLAME;
-          lockStartTime = millis();           // Capture time when lock begins
-        } else {
-          advanceSweep();
-        }
-        break;
-
-      case LOCKED_FLAME:
-        neopixelWrite(RGB_LED_PIN, 64, 0, 0); // 🔴 RED Light
-        digitalWrite(relayPin, LOW);          // Relay ON (Active-Low)
-        digitalWrite(buzzerPin, HIGH);         // Buzzer ON
-        
-        // Break lock if flame goes away OR if 5 seconds have passed
-        if (flameIntensity <= FLAME_THRESHOLD || (millis() - lockStartTime >= MAX_LOCK_TIME)) {
-          // Reset tracking data before searching again
-          maxFlameIntensity = 0; 
-          radarState = SWEEPING;
-        }
-        break;
+    if (currentMode == AUTO_WITH_BUZZER) {
+      if (isFlame) {
+        triggerBuzzer = true;
+        buzzerKeepAlive = currentMillis;
+      } 
+      else if (currentMillis - buzzerKeepAlive > 1500) triggerBuzzer = false;
+    } else if (currentMode == AUTO_WITHOUT_BUZZER) {
+      triggerBuzzer = false;
     }
+
+    if (currentMode == AUTO_WITH_BUZZER || currentMode == AUTO_WITHOUT_BUZZER) {
+      switch (radarState) {
+        
+        case SWEEPING:
+          neopixelWrite(RGB_LED_PIN, 0, 64, 0); 
+          digitalWrite(relayPin, HIGH);          
+          
+          if (isFlame) {
+            radarState = FINDING_EDGE;
+            fireStartAngle = currentAngle;
+          } 
+          
+          radarServo.write(currentAngle);
+          advanceSweep();
+          break;
+
+        case FINDING_EDGE:
+          neopixelWrite(RGB_LED_PIN, 0, 0, 64); 
+          digitalWrite(relayPin, HIGH);         
+          
+          // If flame signal drops, OR we hit the edge of the radar
+          if (!isFlame || currentAngle == 0 || currentAngle == 180) {
+            int fireEndAngle = currentAngle;
+            int actualCenter = (fireStartAngle + fireEndAngle) / 2;
+            
+            sprayCenter = actualCenter + NOZZLE_OFFSET;
+            if (sprayCenter < 0) sprayCenter = 0;
+            if (sprayCenter > 180) sprayCenter = 180;
+            
+            radarState = SECTOR_SPRAY;
+            lockStartTime = millis();           
+            currentAngle = sprayCenter; 
+          } else {
+            advanceSweep();
+          }
+          radarServo.write(currentAngle);
+          break;
+
+        case SECTOR_SPRAY:
+          neopixelWrite(RGB_LED_PIN, 64, 0, 0); 
+          digitalWrite(relayPin, LOW); // Blast the water!         
+          
+          // Sprinkler Sweep Logic
+          if (sprayForward) {
+            currentAngle++;
+            if (currentAngle >= sprayCenter + SPRAY_WIDTH || currentAngle >= 180) sprayForward = false;
+          } else {
+            currentAngle--;
+            if (currentAngle <= sprayCenter - SPRAY_WIDTH || currentAngle <= 0) sprayForward = true;
+          }
+          radarServo.write(currentAngle);
+
+          // Stop spraying after time limit
+          if (millis() - lockStartTime >= MAX_LOCK_TIME) {
+            radarState = SWEEPING;
+          }
+          break;
+      }
+    } 
   }
 }
